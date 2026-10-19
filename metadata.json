@@ -1,0 +1,10 @@
+{
+  "name": "PitchLab",
+  "description": "Mobile-first AI pitch coach for startup pitches, consulting case answers, and elevator pitches with real-time audio evaluation, actionable feedback, and before-and-after comparisons.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
