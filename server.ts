@@ -38,8 +38,8 @@ function getPort(): number {
 
 const PORT = getPort();
 
-// Parse large JSON payloads for base64 audio
-app.use(express.json({ limit: '50mb' }));
+// Parse JSON payloads for base64 audio (a 60s recording is well under this limit)
+app.use(express.json({ limit: '20mb' }));
 
 // Initialize GoogleGenAI server-side client with required User-Agent
 const ai = new GoogleGenAI({
