@@ -38,8 +38,17 @@ function getPort(): number {
 
 const PORT = getPort();
 
-// Parse JSON payloads for base64 audio (a 60s recording is well under this limit)
+// Parse large JSON payloads for base64 audio
 app.use(express.json({ limit: '20mb' }));
+
+// Health check endpoints for immediate container readiness
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
+app.get('/api/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
 
 // Initialize GoogleGenAI server-side client with required User-Agent
 const ai = new GoogleGenAI({
@@ -50,6 +59,72 @@ const ai = new GoogleGenAI({
     },
   },
 });
+
+/**
+ * Format Gemini API errors into clean, friendly human messages instead of raw JSON
+ */
+function formatGeminiError(err: any): string {
+  if (!err) return 'An unexpected error occurred. Please try again.';
+  const raw = err.message || (typeof err === 'string' ? err : JSON.stringify(err));
+
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*"error"[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed?.error) {
+        const code = parsed.error.code;
+        const msg = parsed.error.message || '';
+        const status = parsed.error.status;
+        if (code === 503 || status === 'UNAVAILABLE' || msg.includes('high demand')) {
+          return 'The AI service is experiencing temporary high demand spikes from Google servers. Please wait a brief moment and try again.';
+        }
+        if (code === 429 || status === 'RESOURCE_EXHAUSTED' || msg.includes('quota') || msg.includes('rate')) {
+          return 'The AI service temporarily reached request rate limits. Please wait 5-10 seconds and try again.';
+        }
+        if (msg) return msg;
+      }
+    }
+  } catch {}
+
+  if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
+    return 'The AI service is experiencing temporary high demand spikes from Google servers. Please wait a brief moment and try again.';
+  }
+  if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED')) {
+    return 'The AI service temporarily reached request rate limits. Please wait 5-10 seconds and try again.';
+  }
+
+  return raw;
+}
+
+/**
+ * Execute a Gemini API call with automatic retries for transient 503/429 spikes
+ */
+async function callGeminiWithRetry<T>(callFn: () => Promise<T>, maxRetries = 2, initialDelayMs = 1500): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await callFn();
+    } catch (err: any) {
+      attempt++;
+      const raw = err?.message || String(err);
+      const isTransient =
+        raw.includes('503') ||
+        raw.includes('UNAVAILABLE') ||
+        raw.includes('high demand') ||
+        raw.includes('429') ||
+        raw.includes('RESOURCE_EXHAUSTED') ||
+        raw.includes('rateLimitExceeded');
+
+      if (attempt <= maxRetries && isTransient) {
+        const delay = initialDelayMs * Math.pow(2, attempt - 1) + Math.random() * 500;
+        console.warn(`[Gemini API] Transient 503/429 error, retrying in ${Math.round(delay)}ms (attempt ${attempt}/${maxRetries})...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
 
 // Scenario generation endpoint
 app.post('/api/scenario', async (req, res) => {
@@ -89,13 +164,15 @@ Return pure JSON matching this exact structure:
   "customCriteria": "Specific custom criteria or focus areas to grade against (preserve user's criteria if provided, or supply 1 high-leverage evaluation standard)"
 }`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
+      })
+    );
 
     const text = response.text || '{}';
     const parsed = JSON.parse(text);
@@ -118,7 +195,7 @@ Return pure JSON matching this exact structure:
     console.error('Error generating scenario:', error);
     return res.status(500).json({
       success: false,
-      error: error?.message || 'Failed to generate scenario',
+      error: formatGeminiError(error),
     });
   }
 });
@@ -150,10 +227,12 @@ The candidate has asked ONE clarifying question about this scenario before recor
 
 Provide a concise, actionable answer in 2 to 3 sentences maximum. Give concrete tactical guidance on what angle, metric, or framing will work best against this specific audience.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-    });
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+      })
+    );
 
     const answer = response.text?.trim() || 'Focus on leading with your core quantified metric in the first 10 seconds, then directly address their skepticism before asking for the follow-up meeting.';
     return res.json({ success: true, answer });
@@ -161,7 +240,53 @@ Provide a concise, actionable answer in 2 to 3 sentences maximum. Give concrete 
     console.error('Error answering scenario question:', error);
     return res.status(500).json({
       success: false,
-      error: error?.message || 'Failed to answer scenario question',
+      error: formatGeminiError(error),
+    });
+  }
+});
+
+// Dedicated Audio Transcription endpoint using gemini-3.5-transcribe
+app.post('/api/transcribe', async (req, res) => {
+  try {
+    const { audioBase64, mimeType = 'audio/webm' } = req.body;
+
+    if (!audioBase64) {
+      return res.status(400).json({ success: false, error: 'No audio data received' });
+    }
+
+    let cleanMimeType = mimeType.split(';')[0].trim();
+    if (!cleanMimeType || cleanMimeType === 'audio') {
+      cleanMimeType = 'audio/webm';
+    }
+
+    const audioPart = {
+      inlineData: {
+        mimeType: cleanMimeType,
+        data: audioBase64,
+      },
+    };
+
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.5-transcribe',
+        contents: {
+          parts: [
+            audioPart,
+            {
+              text: 'Transcribe this spoken audio recording verbatim. Capture all spoken words exactly as articulated, preserving filler words (e.g. um, uh, like, you know) and natural speech cadence.',
+            },
+          ],
+        },
+      })
+    );
+
+    const transcript = response.text?.trim() || '';
+    return res.json({ success: true, transcript });
+  } catch (error: any) {
+    console.error('Error in /api/transcribe:', error);
+    return res.status(500).json({
+      success: false,
+      error: formatGeminiError(error),
     });
   }
 });
@@ -276,15 +401,17 @@ Output MUST be a valid JSON object matching this schema:
       text: systemPrompt,
     };
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: {
-        parts: [audioPart, textPart],
-      },
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: {
+          parts: [audioPart, textPart],
+        },
+        config: {
+          responseMimeType: 'application/json',
+        },
+      })
+    );
 
     const responseText = response.text || '{}';
     const parsed = JSON.parse(responseText);
@@ -298,7 +425,7 @@ Output MUST be a valid JSON object matching this schema:
     console.error('Error in /api/evaluate:', error);
     return res.status(500).json({
       success: false,
-      error: error?.message || 'Failed to evaluate audio pitch',
+      error: formatGeminiError(error),
     });
   }
 });
@@ -307,6 +434,24 @@ Output MUST be a valid JSON object matching this schema:
 async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
 
+  let isViteReady = false;
+
+  // Placeholder middleware during Vite startup
+  app.use((req, res, next) => {
+    if (isProduction || req.path.startsWith('/api') || req.path === '/health') {
+      return next();
+    }
+    if (!isViteReady) {
+      res.setHeader('Content-Type', 'text/html');
+      return res.send(`<!DOCTYPE html><html><head><meta http-equiv="refresh" content="1"></head><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#09090b;color:#f4f4f5;"><p>Starting PitchLab...</p></body></html>`);
+    }
+    next();
+  });
+
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`PitchLab server listening on http://0.0.0.0:${PORT}`);
+  });
+
   if (isProduction) {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
@@ -314,16 +459,29 @@ async function startServer() {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   } else {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+    try {
+      const vite = await createViteServer({
+        root: __dirname,
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+      isViteReady = true;
+      console.log('Vite middleware mounted successfully');
+    } catch (viteError) {
+      console.error('Error starting Vite dev server:', viteError);
+    }
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`PitchLab server listening on http://0.0.0.0:${PORT}`);
-  });
+  const handleShutdown = () => {
+    console.log('Shutting down PitchLab server...');
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', handleShutdown);
+  process.on('SIGINT', handleShutdown);
 }
 
 startServer().catch((err) => {

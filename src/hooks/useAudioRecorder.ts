@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { convertTo16kHzMonoWav, blobToBase64 } from '../utils/audioProcessing';
 
 export interface AudioRecorderState {
   isRecording: boolean;
@@ -13,16 +14,22 @@ export interface AudioRecorderState {
   waveformLevels: number[];
 }
 
-export function useAudioRecorder(maxDurationSeconds: number = 60) {
+export function useAudioRecorder(maxDurationSeconds: number = 60, autoStopAtLimit: boolean = true) {
   const [isRecording, setIsRecording] = useState(false);
   const [duration, setDuration] = useState(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioBase64, setAudioBase64] = useState<string | null>(null);
-  const [mimeType, setMimeType] = useState<string>('audio/webm');
+  const [mimeType, setMimeType] = useState<string>('audio/wav');
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [waveformLevels, setWaveformLevels] = useState<number[]>(new Array(16).fill(10));
+
+  const maxDurationRef = useRef(maxDurationSeconds);
+  maxDurationRef.current = maxDurationSeconds;
+
+  const autoStopRef = useRef(autoStopAtLimit);
+  autoStopRef.current = autoStopAtLimit;
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -32,23 +39,29 @@ export function useAudioRecorder(maxDurationSeconds: number = 60) {
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // Find best supported mimeType on client
+  // Find best supported mimeType on client across Safari, Chrome, Android, iOS
   const getSupportedMimeType = useCallback((): string => {
     if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined') {
-      return 'audio/webm';
+      return '';
+    }
+    if (typeof MediaRecorder.isTypeSupported !== 'function') {
+      return '';
     }
     const types = [
       'audio/webm;codecs=opus',
       'audio/webm',
       'audio/mp4',
+      'audio/mp4;codecs=mp4a.40.2',
       'audio/aac',
       'audio/ogg;codecs=opus',
-      'audio/wav'
+      'audio/wav',
     ];
     for (const t of types) {
-      if (MediaRecorder.isTypeSupported(t)) {
-        return t;
-      }
+      try {
+        if (MediaRecorder.isTypeSupported(t)) {
+          return t;
+        }
+      } catch {}
     }
     return '';
   }, []);
@@ -75,7 +88,14 @@ export function useAudioRecorder(maxDurationSeconds: number = 60) {
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+      try {
+        if (mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.requestData();
+        }
+      } catch {}
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
     }
     setIsRecording(false);
     cleanupAudio();
@@ -95,13 +115,20 @@ export function useAudioRecorder(maxDurationSeconds: number = 60) {
         throw new Error('Audio recording is not supported in this browser environment.');
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      // iOS Safari and Android Chrome audio stream retrieval with fallback
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch (constraintErr) {
+        console.warn('getUserMedia with constraints failed, falling back to basic audio:', constraintErr);
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
 
       mediaStreamRef.current = stream;
 
@@ -110,6 +137,11 @@ export function useAudioRecorder(maxDurationSeconds: number = 60) {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
           const audioCtx = new AudioCtx();
+          if (audioCtx.state === 'suspended') {
+            try {
+              await audioCtx.resume();
+            } catch {}
+          }
           audioContextRef.current = audioCtx;
           const source = audioCtx.createMediaStreamSource(stream);
           const analyser = audioCtx.createAnalyser();
@@ -140,14 +172,15 @@ export function useAudioRecorder(maxDurationSeconds: number = 60) {
       }
 
       const selectedMime = getSupportedMimeType();
-      setMimeType(selectedMime || 'audio/webm');
-
-      const options: MediaRecorderOptions = {};
-      if (selectedMime) {
-        options.mimeType = selectedMime;
+      let recorder: MediaRecorder;
+      try {
+        recorder = selectedMime
+          ? new MediaRecorder(stream, { mimeType: selectedMime })
+          : new MediaRecorder(stream);
+      } catch (optionsErr) {
+        console.warn('MediaRecorder with mimeType option failed, falling back to default constructor:', optionsErr);
+        recorder = new MediaRecorder(stream);
       }
-
-      const recorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (event) => {
@@ -158,24 +191,37 @@ export function useAudioRecorder(maxDurationSeconds: number = 60) {
 
       recorder.onstop = async () => {
         const detectedType = recorder.mimeType || selectedMime || 'audio/webm';
-        const blob = new Blob(chunksRef.current, { type: detectedType });
-        setAudioBlob(blob);
-        const url = URL.createObjectURL(blob);
-        setAudioUrl(url);
+        const originalBlob = new Blob(chunksRef.current, { type: detectedType });
 
-        // Convert blob to base64
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const res = reader.result as string;
-          if (res) {
-            const base64 = res.includes(',') ? res.split(',')[1] : res;
-            setAudioBase64(base64);
+        // Keep the original recording for playback in the app
+        setAudioBlob(originalBlob);
+        const originalUrl = URL.createObjectURL(originalBlob);
+        setAudioUrl(originalUrl);
+
+        // Decode with AudioContext, downmix to mono, resample to 16 kHz with OfflineAudioContext, and encode to 16-bit PCM WAV
+        try {
+          const { wavBase64 } = await convertTo16kHzMonoWav(originalBlob);
+          setAudioBase64(wavBase64);
+          setMimeType('audio/wav');
+        } catch (conversionErr) {
+          console.warn('Audio decoding / WAV conversion failed, falling back to original audio:', conversionErr);
+          // If decoding fails, fall back to sending original audio
+          try {
+            const fallbackBase64 = await blobToBase64(originalBlob);
+            setAudioBase64(fallbackBase64);
+            setMimeType(detectedType);
+          } catch (readErr) {
+            console.error('Failed to read fallback audio blob:', readErr);
+            setError('Failed to process recorded audio. Please try recording again.');
           }
-        };
-        reader.readAsDataURL(blob);
+        }
       };
 
-      recorder.start(250); // collect chunks every 250ms
+      try {
+        recorder.start(1000); // 1-second chunks for mobile stability
+      } catch {
+        recorder.start();
+      }
       setIsRecording(true);
 
       // Start duration counter
@@ -184,7 +230,7 @@ export function useAudioRecorder(maxDurationSeconds: number = 60) {
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
         setDuration(elapsed);
 
-        if (elapsed >= maxDurationSeconds) {
+        if (autoStopRef.current && elapsed >= maxDurationRef.current) {
           stopRecording();
         }
       }, 200);

@@ -48,6 +48,12 @@ export default function App() {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [failedSubmission, setFailedSubmission] = useState<{
+    audioBase64: string;
+    mimeType: string;
+    audioBlob: Blob;
+    round: 1 | 2;
+  } | null>(null);
 
   // Pitch Library / Saved Sessions State
   const [savedSessions, setSavedSessions] = useState<SavedPitchSession[]>([]);
@@ -212,6 +218,7 @@ export default function App() {
         } else {
           const presets = DEFAULT_SCENARIOS[mode];
           setScenario(presets[0]);
+          setErrorMessage('AI scenario generation is unavailable, using a sample scenario.');
           setStep('scenario');
         }
       }
@@ -230,6 +237,7 @@ export default function App() {
       } else {
         const presets = DEFAULT_SCENARIOS[mode];
         setScenario(presets[0]);
+        setErrorMessage('AI scenario generation is unavailable, using a sample scenario.');
       }
       setStep('scenario');
     } finally {
@@ -290,10 +298,11 @@ export default function App() {
 
       const data = await res.json();
       if (!data.success || !data.evaluation) {
-        throw new Error(data.error || 'Evaluation failed. Please try again.');
+        throw new Error(data.error || 'The server rejected the audio format. Please try recording again.');
       }
 
       const evaluation: PitchEvaluation = data.evaluation;
+      setFailedSubmission(null);
 
       if (isRound1) {
         setEvalR1(evaluation);
@@ -304,7 +313,13 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Audio evaluation error:', err);
-      setErrorMessage(err.message || 'Failed to evaluate audio pitch. Please try again.');
+      setFailedSubmission({
+        audioBase64,
+        mimeType,
+        audioBlob,
+        round: currentRound,
+      });
+      setErrorMessage(err.message || 'The server rejected the audio format. Please try recording again.');
       setStep(isRound1 ? 'recording_r1' : 'recording_r2');
     } finally {
       setIsEvaluating(false);
@@ -321,6 +336,7 @@ export default function App() {
     setAudioR2Url(null);
     setEvalR2(null);
     setErrorMessage(null);
+    setFailedSubmission(null);
     setIsSavedR1(false);
     setIsSavedR2(false);
     setCurrentSessionId(`pitch_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
@@ -382,15 +398,70 @@ export default function App() {
       <main className="flex-1 w-full max-w-xl mx-auto px-4 py-5 flex flex-col justify-start">
         {/* Error Notification Banner */}
         {errorMessage && (
-          <div className="mb-4 p-3.5 rounded-xl bg-zinc-100 border border-zinc-200 text-zinc-800 text-xs flex items-start gap-2.5 shadow-xs">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-zinc-600" />
-            <div className="flex-1">
-              <span className="font-semibold block text-zinc-900">Notice</span>
-              {errorMessage}
+          <div className="mb-4 p-3.5 rounded-xl bg-amber-50/90 border border-amber-200/90 text-amber-900 text-xs flex items-start gap-2.5 shadow-xs">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+            <div className="flex-1 space-y-2">
+              <div>
+                <span className="font-semibold block text-amber-950">Notice</span>
+                <p className="text-amber-800 leading-relaxed mt-0.5">
+                  {(() => {
+                    const raw = errorMessage;
+                    try {
+                      const jsonMatch = raw.match(/\{[\s\S]*"error"[\s\S]*\}/);
+                      if (jsonMatch) {
+                        const parsed = JSON.parse(jsonMatch[0]);
+                        if (parsed?.error) {
+                          const code = parsed.error.code;
+                          const status = parsed.error.status;
+                          const msg = parsed.error.message || '';
+                          if (code === 503 || status === 'UNAVAILABLE' || msg.includes('high demand')) {
+                            return 'Google AI servers are temporarily experiencing high demand. Your pitch recording has been saved safely—click the button below to retry evaluation.';
+                          }
+                          if (code === 429 || status === 'RESOURCE_EXHAUSTED') {
+                            return 'The AI service temporarily reached request rate limits. Please wait 5-10 seconds and retry.';
+                          }
+                          if (msg) return msg;
+                        }
+                      }
+                    } catch {}
+                    if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
+                      return 'Google AI servers are temporarily experiencing high demand. Your pitch recording has been saved safely—click the button below to retry evaluation.';
+                    }
+                    return raw;
+                  })()}
+                </p>
+              </div>
+              {failedSubmission && (
+                <button
+                  onClick={() =>
+                    handleSubmitAudio(
+                      failedSubmission.audioBase64,
+                      failedSubmission.mimeType,
+                      failedSubmission.audioBlob
+                    )
+                  }
+                  disabled={isEvaluating}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-800 text-white hover:bg-amber-900 active:scale-98 transition shadow-xs cursor-pointer disabled:opacity-60"
+                >
+                  {isEvaluating ? (
+                    <>
+                      <div className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                      Evaluating Speech...
+                    </>
+                  ) : (
+                    <>
+                      <span>↻</span> Retry Analysis with Saved Audio
+                    </>
+                  )}
+                </button>
+              )}
             </div>
             <button
-              onClick={() => setErrorMessage(null)}
-              className="text-zinc-400 hover:text-zinc-700 font-medium px-1"
+              onClick={() => {
+                setErrorMessage(null);
+                setFailedSubmission(null);
+              }}
+              className="text-amber-500 hover:text-amber-800 font-medium px-1"
             >
               ✕
             </button>
