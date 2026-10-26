@@ -15,6 +15,7 @@ import {
   Scenario,
 } from './types';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
+import { postJsonWithTimeout, RequestTimeoutError } from './utils/postJsonWithTimeout';
 
 type FlowStep =
   | 'mode_selection'
@@ -48,6 +49,11 @@ export default function App() {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // Remembers the last scenario request so the user can retry the AI version after a failure or timeout
+  const [scenarioRetry, setScenarioRetry] = useState<{
+    industry?: string;
+    freestyleDraft?: Partial<Scenario>;
+  } | null>(null);
   const [failedSubmission, setFailedSubmission] = useState<{
     audioBase64: string;
     mimeType: string;
@@ -66,6 +72,13 @@ export default function App() {
 
   // Preset index tracker
   const [presetIndex, setPresetIndex] = useState(0);
+
+  // Bring a new notice into view (on phones the page is often scrolled down after tapping a button near the bottom)
+  useEffect(() => {
+    if (errorMessage) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [errorMessage]);
 
   // Load saved history on mount
   useEffect(() => {
@@ -193,15 +206,14 @@ export default function App() {
     setIsGeneratingScenario(true);
     setErrorMessage(null);
     try {
-      const res = await fetch('/api/scenario', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, feedbackStyle, industry, freestyleDraft }),
-      });
-
-      const data = await res.json();
+      const data = await postJsonWithTimeout(
+        '/api/scenario',
+        { mode, feedbackStyle, industry, freestyleDraft },
+        30000
+      );
       if (data.success && data.scenario && data.scenario.title) {
         setScenario(data.scenario);
+        setScenarioRetry(null);
         setStep('scenario');
       } else {
         if (mode === 'freestyle' && freestyleDraft?.title) {
@@ -218,12 +230,21 @@ export default function App() {
         } else {
           const presets = DEFAULT_SCENARIOS[mode];
           setScenario(presets[0]);
-          setErrorMessage('AI scenario generation is unavailable, using a sample scenario.');
           setStep('scenario');
         }
+        setScenarioRetry({ industry, freestyleDraft });
+        setErrorMessage(
+          `${data?.error ? `${data.error} ` : ''}A fallback scenario is shown so you can keep practicing. You can retry the AI version.`
+        );
       }
     } catch (err: any) {
       console.warn('Using preset or draft scenario fallback:', err);
+      setScenarioRetry({ industry, freestyleDraft });
+      setErrorMessage(
+        err instanceof RequestTimeoutError
+          ? 'Scenario generation is taking too long. A fallback scenario is shown so you can keep practicing, or you can retry the AI version.'
+          : 'AI scenario generation is unavailable right now. A fallback scenario is shown so you can keep practicing, or you can retry the AI version.'
+      );
       if (mode === 'freestyle' && freestyleDraft?.title) {
         setScenario({
           title: freestyleDraft.title,
@@ -237,7 +258,6 @@ export default function App() {
       } else {
         const presets = DEFAULT_SCENARIOS[mode];
         setScenario(presets[0]);
-        setErrorMessage('AI scenario generation is unavailable, using a sample scenario.');
       }
       setStep('scenario');
     } finally {
@@ -281,10 +301,9 @@ export default function App() {
     setErrorMessage(null);
 
     try {
-      const res = await fetch('/api/evaluate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const data = await postJsonWithTimeout(
+        '/api/evaluate',
+        {
           audioBase64,
           mimeType,
           scenario,
@@ -293,10 +312,9 @@ export default function App() {
           round: currentRound,
           followUpQuestion: evalR1?.followUpQuestion,
           previousFeedback: evalR1,
-        }),
-      });
-
-      const data = await res.json();
+        },
+        90000
+      );
       if (!data.success || !data.evaluation) {
         throw new Error(data.error || 'The server rejected the audio format. Please try recording again.');
       }
@@ -337,6 +355,7 @@ export default function App() {
     setEvalR2(null);
     setErrorMessage(null);
     setFailedSubmission(null);
+    setScenarioRetry(null);
     setIsSavedR1(false);
     setIsSavedR2(false);
     setCurrentSessionId(`pitch_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
@@ -431,6 +450,24 @@ export default function App() {
                   })()}
                 </p>
               </div>
+              {scenarioRetry && !failedSubmission && (
+                <button
+                  onClick={() => handleGenerateScenario(scenarioRetry.industry, scenarioRetry.freestyleDraft)}
+                  disabled={isGeneratingScenario}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-800 text-white hover:bg-amber-900 active:scale-98 transition shadow-xs cursor-pointer disabled:opacity-60"
+                >
+                  {isGeneratingScenario ? (
+                    <>
+                      <div className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <span>↻</span> Retry AI Scenario
+                    </>
+                  )}
+                </button>
+              )}
               {failedSubmission && (
                 <button
                   onClick={() =>
@@ -460,6 +497,7 @@ export default function App() {
               onClick={() => {
                 setErrorMessage(null);
                 setFailedSubmission(null);
+                setScenarioRetry(null);
               }}
               className="text-amber-500 hover:text-amber-800 font-medium px-1"
             >

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, Mic, Edit2, Check, ArrowLeft, HelpCircle, MessageSquare, Send, ChevronDown, ChevronUp } from 'lucide-react';
 import { FeedbackStyle, PitchMode, Scenario } from '../types';
+import { postJsonWithTimeout } from '../utils/postJsonWithTimeout';
 
 interface ScenarioCardProps {
   scenario: Scenario;
@@ -109,18 +110,16 @@ export const ScenarioCard: React.FC<ScenarioCardProps> = ({
       : scenario;
 
     try {
-      const res = await fetch('/api/scenario-question', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const data = await postJsonWithTimeout(
+        '/api/scenario-question',
+        {
           scenario: activeScenario,
           question: q,
           mode,
           feedbackStyle,
-        }),
-      });
-
-      const data = await res.json();
+        },
+        25000
+      );
       if (!data.success || !data.answer) {
         throw new Error(data.error || 'Failed to get answer. Please try again.');
       }

@@ -67,6 +67,10 @@ function formatGeminiError(err: any): string {
   if (!err) return 'An unexpected error occurred. Please try again.';
   const raw = err.message || (typeof err === 'string' ? err : JSON.stringify(err));
 
+  if (raw.includes('GEMINI_TIMEOUT')) {
+    return 'The AI took too long to respond. Please try again.';
+  }
+
   try {
     const jsonMatch = raw.match(/\{[\s\S]*"error"[\s\S]*\}/);
     if (jsonMatch) {
@@ -99,11 +103,30 @@ function formatGeminiError(err: any): string {
 /**
  * Execute a Gemini API call with automatic retries for transient 503/429 spikes
  */
-async function callGeminiWithRetry<T>(callFn: () => Promise<T>, maxRetries = 2, initialDelayMs = 1500): Promise<T> {
+async function callGeminiWithRetry<T>(
+  callFn: () => Promise<T>,
+  maxRetries = 2,
+  initialDelayMs = 1500,
+  timeoutMs = 20000
+): Promise<T> {
   let attempt = 0;
   while (true) {
     try {
-      return await callFn();
+      // Fail fast instead of leaving the user on a loading screen if Gemini stalls.
+      // A timeout is not retried (see isTransient below), so the user gets an answer quickly.
+      return await new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('GEMINI_TIMEOUT')), timeoutMs);
+        callFn().then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          (error) => {
+            clearTimeout(timer);
+            reject(error);
+          }
+        );
+      });
     } catch (err: any) {
       attempt++;
       const raw = err?.message || String(err);
@@ -171,7 +194,10 @@ Return pure JSON matching this exact structure:
         config: {
           responseMimeType: 'application/json',
         },
-      })
+      }),
+      1,
+      1500,
+      12000
     );
 
     const text = response.text || '{}';
@@ -277,7 +303,10 @@ app.post('/api/transcribe', async (req, res) => {
             },
           ],
         },
-      })
+      }),
+      1,
+      1500,
+      45000
     );
 
     const transcript = response.text?.trim() || '';
@@ -410,7 +439,10 @@ Output MUST be a valid JSON object matching this schema:
         config: {
           responseMimeType: 'application/json',
         },
-      })
+      }),
+      1,
+      1500,
+      60000
     );
 
     const responseText = response.text || '{}';
