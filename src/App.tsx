@@ -209,7 +209,7 @@ export default function App() {
       const data = await postJsonWithTimeout(
         '/api/scenario',
         { mode, feedbackStyle, industry, freestyleDraft },
-        30000
+        35000
       );
       if (data.success && data.scenario && data.scenario.title) {
         setScenario(data.scenario);
@@ -425,6 +425,8 @@ export default function App() {
                 <p className="text-amber-800 leading-relaxed mt-0.5">
                   {(() => {
                     const raw = errorMessage;
+                    // The recording-specific wording below only applies when an audio submission failed
+                    if (!failedSubmission) return raw;
                     try {
                       const jsonMatch = raw.match(/\{[\s\S]*"error"[\s\S]*\}/);
                       if (jsonMatch) {

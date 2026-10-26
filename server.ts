@@ -149,6 +149,33 @@ async function callGeminiWithRetry<T>(
   }
 }
 
+/**
+ * Parse JSON from a model reply, tolerating markdown code fences or stray text around the object.
+ */
+function parseModelJson(text: string): any {
+  const trimmed = (text || '').trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {}
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {}
+  }
+
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {}
+  }
+
+  throw new Error('The AI returned a reply the app could not read. Please try again.');
+}
+
 // Scenario generation endpoint
 app.post('/api/scenario', async (req, res) => {
   try {
@@ -197,11 +224,11 @@ Return pure JSON matching this exact structure:
       }),
       1,
       1500,
-      12000
+      20000
     );
 
     const text = response.text || '{}';
-    const parsed = JSON.parse(text);
+    const parsed = parseModelJson(text);
 
     // Safeguard: Ensure user's custom aspects are strictly preserved
     if (mode === 'freestyle' && freestyleDraft) {
@@ -446,7 +473,7 @@ Output MUST be a valid JSON object matching this schema:
     );
 
     const responseText = response.text || '{}';
-    const parsed = JSON.parse(responseText);
+    const parsed = parseModelJson(responseText);
 
     return res.json({
       success: true,
