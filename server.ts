@@ -50,6 +50,10 @@ app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: 'ok', uptime: process.uptime() });
 });
 
+// Model used for scenarios, questions and pitch evaluation.
+// Can be changed without editing code by setting GEMINI_MODEL in the Secrets panel.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+
 // Initialize GoogleGenAI server-side client with required User-Agent
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -176,6 +180,46 @@ function parseModelJson(text: string): any {
   throw new Error('The AI returned a reply the app could not read. Please try again.');
 }
 
+// Self-test: open /api/diagnose in a browser to see whether this server can reach Gemini and how fast it replies
+app.get('/api/diagnose', async (_req, res) => {
+  const timed = async (label: string, run: () => Promise<any>) => {
+    const started = Date.now();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('GEMINI_TIMEOUT')), 20000);
+        run().then(
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          (error) => {
+            clearTimeout(timer);
+            reject(error);
+          }
+        );
+      });
+      return { test: label, ok: true, ms: Date.now() - started };
+    } catch (err: any) {
+      return { test: label, ok: false, ms: Date.now() - started, error: formatGeminiError(err).slice(0, 300) };
+    }
+  };
+
+  const results = [
+    await timed('tiny text reply', () =>
+      ai.models.generateContent({ model: GEMINI_MODEL, contents: 'Reply with the single word OK.' })
+    ),
+    await timed('short JSON reply', () =>
+      ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: 'Return JSON like {"title":"..."} with a short title for a pitch about a coffee shop.',
+        config: { responseMimeType: 'application/json' },
+      })
+    ),
+  ];
+
+  res.json({ model: GEMINI_MODEL, apiKeyConfigured: Boolean(process.env.GEMINI_API_KEY), results });
+});
+
 // Scenario generation endpoint
 app.post('/api/scenario', async (req, res) => {
   try {
@@ -216,7 +260,7 @@ Return pure JSON matching this exact structure:
 
     const response = await callGeminiWithRetry(() =>
       ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: GEMINI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -282,7 +326,7 @@ Provide a concise, actionable answer in 2 to 3 sentences maximum. Give concrete 
 
     const response = await callGeminiWithRetry(() =>
       ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: GEMINI_MODEL,
         contents: prompt,
       })
     );
@@ -459,7 +503,7 @@ Output MUST be a valid JSON object matching this schema:
 
     const response = await callGeminiWithRetry(() =>
       ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: GEMINI_MODEL,
         contents: {
           parts: [audioPart, textPart],
         },
