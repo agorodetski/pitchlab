@@ -39,6 +39,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState('');
+  const [showDimensions, setShowDimensions] = useState(false);
 
   if (!isOpen) return null;
 
@@ -70,6 +71,59 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
           ...sessions.map((s) => s.evalR2?.scores.overall ?? s.evalR1.scores.overall)
         ).toFixed(1)
       : '0.0';
+
+  const avgNum = parseFloat(avgScore);
+
+  // Chronological score progression & growth tracking
+  const sortedSessions = [...sessions].sort((a, b) => a.timestamp - b.timestamp);
+  const earliestScore =
+    sortedSessions.length > 0
+      ? (sortedSessions[0].evalR2?.scores.overall ?? sortedSessions[0].evalR1.scores.overall)
+      : 0;
+  const latestScore =
+    sortedSessions.length > 0
+      ? (sortedSessions[sortedSessions.length - 1].evalR2?.scores.overall ?? sortedSessions[sortedSessions.length - 1].evalR1.scores.overall)
+      : 0;
+  const overallGrowth = sortedSessions.length > 1 ? latestScore - earliestScore : null;
+
+  const avgDimensions =
+    totalSessions > 0
+      ? {
+          clarity: (
+            sessions.reduce((acc, s) => acc + (s.evalR2?.scores.clarity ?? s.evalR1.scores.clarity), 0) /
+            totalSessions
+          ).toFixed(1),
+          structure: (
+            sessions.reduce((acc, s) => acc + (s.evalR2?.scores.structure ?? s.evalR1.scores.structure), 0) /
+            totalSessions
+          ).toFixed(1),
+          persuasiveness: (
+            sessions.reduce(
+              (acc, s) => acc + (s.evalR2?.scores.persuasiveness ?? s.evalR1.scores.persuasiveness),
+              0
+            ) / totalSessions
+          ).toFixed(1),
+          confidence: (
+            sessions.reduce(
+              (acc, s) => acc + (s.evalR2?.scores.confidence ?? s.evalR1.scores.confidence),
+              0
+            ) / totalSessions
+          ).toFixed(1),
+          concision: (
+            sessions.reduce((acc, s) => acc + (s.evalR2?.scores.concision ?? s.evalR1.scores.concision), 0) /
+            totalSessions
+          ).toFixed(1),
+        }
+      : null;
+
+  const getProficiency = (score: number) => {
+    if (score >= 9.0) return { label: 'Executive Tier-1', color: 'text-purple-700 font-semibold' };
+    if (score >= 8.0) return { label: 'Proficient Presenter', color: 'text-blue-700 font-semibold' };
+    if (score >= 6.5) return { label: 'Competent Pitcher', color: 'text-emerald-700 font-semibold' };
+    return { label: 'Foundational Skill', color: 'text-zinc-600 font-semibold' };
+  };
+
+  const proficiency = getProficiency(avgNum);
 
   const handleStartEditNotes = (session: SavedPitchSession, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -282,6 +336,25 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
                         </div>
                       )}
                     </div>
+                  </div>
+
+                  {/* Pitch Score Progress Bar */}
+                  <div
+                    className="w-full bg-zinc-100 rounded-full h-1.5 overflow-hidden flex"
+                    title={`Score: ${(r2Score ?? r1Score).toFixed(1)} / 10`}
+                  >
+                    <div
+                      className="bg-[#0f1d40] h-full rounded-l-full transition-all"
+                      style={{ width: `${Math.min(100, Math.max(2, (r1Score / 10) * 100))}%` }}
+                    />
+                    {r2Score !== undefined && r2Score > r1Score && (
+                      <div
+                        className="bg-emerald-500 h-full rounded-r-full transition-all"
+                        style={{
+                          width: `${Math.min(100 - (r1Score / 10) * 100, ((r2Score - r1Score) / 10) * 100)}%`,
+                        }}
+                      />
+                    )}
                   </div>
 
                   {/* Personal Note if exists or when editing */}
