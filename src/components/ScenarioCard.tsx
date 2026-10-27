@@ -168,6 +168,10 @@ export const ScenarioCard: React.FC<ScenarioCardProps> = ({
         <div className="flex items-center gap-2 text-xs text-zinc-500">
           <span>{getFormatLabel()}</span>
           <span>·</span>
+          <span className="capitalize text-zinc-600 font-medium">
+            {scenario.difficulty || 'simple'}
+          </span>
+          <span>·</span>
           <span>{feedbackStyle === 'tough' ? 'Tough Investor' : 'Supportive Mentor'}</span>
         </div>
       </div>

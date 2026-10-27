@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
 import { ArrowRight, Check, Plus, Sparkles, Sliders, Wand2, Play } from 'lucide-react';
-import { FeedbackStyle, PitchMode, Scenario } from '../types';
+import { FeedbackStyle, PitchMode, Scenario, ScenarioDifficulty } from '../types';
 
 interface ModeSelectorProps {
   selectedMode: PitchMode;
   onSelectMode: (mode: PitchMode) => void;
   selectedStyle: FeedbackStyle;
   onSelectStyle: (style: FeedbackStyle) => void;
-  onContinue: (industry?: string, freestyleDraft?: Partial<Scenario>) => void;
+  selectedDifficulty: ScenarioDifficulty;
+  onSelectDifficulty: (difficulty: ScenarioDifficulty) => void;
+  onContinue: (industry?: string, freestyleDraft?: Partial<Scenario>, difficulty?: ScenarioDifficulty) => void;
   onDirectStartFreestyle?: (scenario: Scenario) => void;
   isLoading?: boolean;
 }
@@ -17,6 +19,8 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
   onSelectMode,
   selectedStyle,
   onSelectStyle,
+  selectedDifficulty,
+  onSelectDifficulty,
   onContinue,
   onDirectStartFreestyle,
   isLoading = false,
@@ -218,6 +222,28 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
     },
   ];
 
+  const difficulties: Array<{
+    id: ScenarioDifficulty;
+    title: string;
+    description: string;
+  }> = [
+    {
+      id: 'simple',
+      title: 'Simple',
+      description: 'Relatable everyday concepts, zero confusing jargon, and approachable audiences. Perfect for beginners.',
+    },
+    {
+      id: 'medium',
+      title: 'Medium',
+      description: 'Realistic business pitch with standard market metrics, clear unit economics, and balanced trade-offs.',
+    },
+    {
+      id: 'complex',
+      title: 'Complex',
+      description: 'High-stakes enterprise challenges with strict constraints, nuanced financial/technical metrics, and skeptics.',
+    },
+  ];
+
   const presetIndustries = [
     'AI & SaaS',
     'Fintech',
@@ -227,46 +253,115 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
     'Consumer',
   ];
 
-  const freestyleTemplates = [
-    {
-      label: 'Internal Proposal',
-      title: 'AI Tooling Budget Approval',
-      audience: 'VP of Engineering and CFO',
-      context: 'Pitching an internal developer platform migration to reduce build bottlenecks and cloud compute overhead.',
-      objective: 'Secure approval for a $120k pilot budget and 2 dedicated sprint cycles.',
-      constraint: 'CFO is enforcing strict cost freezes across all software tooling this quarter.',
-      criteria: 'Quantified ROI within 6 months, clear milestone roadmap, and zero downtime risk.',
-    },
-    {
-      label: 'Job Interview',
-      title: 'Executive Role Turnaround Story',
-      audience: 'CEO and Lead Board Director',
-      context: 'Final interview stage for a VP / Head of Growth position at a high-growth scale-up.',
-      objective: 'Deliver your 90-day turnaround strategy to reduce churn and double qualified pipeline.',
-      constraint: 'CEO dislikes corporate buzzwords and demands concrete execution specifics.',
-      criteria: 'Executive composure, structured 30-60-90 day milestones, and quantified past results.',
-    },
-    {
-      label: 'Strategic Partnership',
-      title: 'Enterprise Platform Integration',
-      audience: 'Head of Corporate Business Development',
-      context: 'Proposing an exclusive co-marketing and native API integration partnership.',
-      objective: 'Earn a technical scoping sprint and sign a reciprocal pilot agreement.',
-      constraint: 'They have a strong "not-invented-here" bias and protect their enterprise customer base.',
-      criteria: 'Mutual retention value, clear competitive moat, and time-to-market advantage.',
-    },
-    {
-      label: 'Sales Demo Hook',
-      title: 'Enterprise Cyber Security Pitch',
-      audience: 'Chief Information Security Officer (CISO)',
-      context: 'You have a 60-second opening in an introductory discovery call with a Fortune 500 account.',
-      objective: 'Convince the CISO to commit to a 20-minute architectural deep-dive next Tuesday.',
-      constraint: 'They receive dozens of vendor cold emails every week and are extremely protective of their time.',
-      criteria: 'Punchy problem hook, quantified industry breach risk, and a low-friction meeting ask.',
-    },
-  ];
+  const freestyleTemplatesByDifficulty: Record<ScenarioDifficulty, Array<{
+    label: string;
+    title: string;
+    audience: string;
+    context: string;
+    objective: string;
+    constraint: string;
+    criteria: string;
+  }>> = {
+    simple: [
+      {
+        label: 'Team Learning Hour',
+        title: 'Weekly 45-Minute Team Peer Learning Hour',
+        audience: 'Direct Project Manager',
+        context: 'Proposing a weekly 45-minute peer tutorial where teammates share productivity shortcuts, debugging tips, and tools.',
+        objective: 'Convince your manager to approve a 4-week trial run starting next Friday.',
+        constraint: 'Manager is worried about sprint velocity and team bandwidth.',
+        criteria: 'Relatable tone, low-risk trial framing, and practical productivity gains.'
+      },
+      {
+        label: 'Club Budget Request',
+        title: 'Campus Finals Decompression Event',
+        audience: 'Student Activities Board Treasurer',
+        context: 'Pitching a $300 budget request for refreshments and materials for a campus wellness workshop during finals.',
+        objective: 'Secure full funding approval on the spot.',
+        constraint: 'Board has limited remaining budget and needs to justify every dollar.',
+        criteria: 'Clear student turnout estimate, transparent budget, and campus impact.'
+      },
+      {
+        label: 'Simple Tool Trial',
+        title: 'Visual Whiteboard Collaboration Tool',
+        audience: 'Department Team Lead',
+        context: 'The subteam coordinates projects across messy email threads. You found a free intuitive whiteboard tool.',
+        objective: 'Convince your lead to test the tool with your 4-person subteam for two weeks.',
+        constraint: 'Lead dislikes software learning curves and switching friction.',
+        criteria: 'Zero setup cost emphasis, relatable everyday pain points, and minimal disruption promise.'
+      }
+    ],
+    medium: [
+      {
+        label: 'Internal Proposal',
+        title: 'AI Tooling Budget Approval',
+        audience: 'VP of Engineering and CFO',
+        context: 'Pitching an internal developer platform migration to reduce build bottlenecks and cloud compute overhead.',
+        objective: 'Secure approval for a $120k pilot budget and 2 dedicated sprint cycles.',
+        constraint: 'CFO is enforcing strict cost freezes across all software tooling this quarter.',
+        criteria: 'Quantified ROI within 6 months, clear milestone roadmap, and zero downtime risk.'
+      },
+      {
+        label: 'Sales Demo Hook',
+        title: 'Enterprise Cyber Security Pitch',
+        audience: 'Chief Information Security Officer (CISO)',
+        context: 'You have a 60-second opening in an introductory discovery call with a Fortune 500 account.',
+        objective: 'Convince the CISO to commit to a 20-minute architectural deep-dive next Tuesday.',
+        constraint: 'They receive dozens of vendor cold emails every week and are extremely protective of their time.',
+        criteria: 'Punchy problem hook, quantified industry breach risk, and a low-friction meeting ask.'
+      },
+      {
+        label: 'Strategic Partnership',
+        title: 'Enterprise Platform Integration',
+        audience: 'Head of Corporate Business Development',
+        context: 'Proposing an exclusive co-marketing and native API integration partnership.',
+        objective: 'Earn a technical scoping sprint and sign a reciprocal pilot agreement.',
+        constraint: 'They have a strong "not-invented-here" bias and protect their enterprise customer base.',
+        criteria: 'Mutual retention value, clear competitive moat, and time-to-market advantage.'
+      }
+    ],
+    complex: [
+      {
+        label: 'Turnaround Story',
+        title: 'Executive Role Turnaround Story',
+        audience: 'CEO and Lead Board Director',
+        context: 'Final interview stage for a VP / Head of Growth position at a high-growth scale-up.',
+        objective: 'Deliver your 90-day turnaround strategy to reduce churn and double qualified pipeline.',
+        constraint: 'CEO dislikes corporate buzzwords and demands concrete execution specifics.',
+        criteria: 'Executive composure, structured 30-60-90 day milestones, and quantified past results.'
+      },
+      {
+        label: 'Series B Capital Plan',
+        title: 'Series B European Expansion Rationale',
+        audience: 'Lead Partner at Growth Venture Syndicate',
+        context: 'Defending your financial model for a $20M Series B expansion into European enterprise accounts.',
+        objective: 'Convince the investment committee that your Net Revenue Retention (134%) justifies aggressive sales hiring.',
+        constraint: 'Macro environment favors profitability; committee demands a 18-month path to cash-flow breakeven.',
+        criteria: 'Rigorous unit economics, burn multiple defense, and phased hiring milestones.'
+      },
+      {
+        label: 'Board Divestiture',
+        title: 'Legacy Subsidiary Spin-Off',
+        audience: 'Board of Directors Audit & Risk Committee',
+        context: 'Recommending the tax-free spin-off of a legacy enterprise software subsidiary with declining EBITDA margins.',
+        objective: 'Secure board consensus to engage investment bankers for an auction process.',
+        constraint: 'Two legacy board members hold sentimental attachment to the founding subsidiary.',
+        criteria: 'Fiduciary clarity, valuation multiple arbitrage analysis, and strategic risk mitigation.'
+      }
+    ]
+  };
 
-  const applyFreestyleTemplate = (tmpl: (typeof freestyleTemplates)[0]) => {
+  const activeFreestyleTemplates = freestyleTemplatesByDifficulty[selectedDifficulty] || freestyleTemplatesByDifficulty.simple;
+
+  const applyFreestyleTemplate = (tmpl: {
+    label: string;
+    title: string;
+    audience: string;
+    context: string;
+    objective: string;
+    constraint: string;
+    criteria: string;
+  }) => {
     setFreestyleTitle(tmpl.title);
     setFreestyleAudience(tmpl.audience);
     setFreestyleContext(tmpl.context);
@@ -328,18 +423,19 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
 
     const customScenario: Scenario = {
       title: freestyleTitle.trim(),
-      audience: freestyleAudience.trim() || 'Executive Stakeholder',
+      audience: freestyleAudience.trim() || (selectedDifficulty === 'simple' ? 'Team Lead' : 'Executive Stakeholder'),
       context: freestyleContext.trim() || 'Custom user pitch scenario.',
       objective: freestyleObjective.trim() || 'Present your core argument clearly within 60 seconds.',
-      keyConstraint: freestyleConstraint.trim() || 'Audience is pressed for time and highly analytical.',
+      keyConstraint: freestyleConstraint.trim() || (selectedDifficulty === 'simple' ? 'Audience has a busy daily schedule.' : 'Audience is pressed for time and highly analytical.'),
       starterTip: 'Hook the listener with your strongest single metric or insight upfront.',
       customCriteria: freestyleCriteria.trim() || undefined,
+      difficulty: selectedDifficulty,
     };
 
     if (onDirectStartFreestyle) {
       onDirectStartFreestyle(customScenario);
     } else {
-      onContinue(undefined, customScenario);
+      onContinue(undefined, customScenario, selectedDifficulty);
     }
   };
 
@@ -349,13 +445,14 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
 
     const draft: Partial<Scenario> = {
       title: freestyleTitle.trim() || 'Custom Executive Pitch',
-      audience: freestyleAudience.trim() || 'Executive Stakeholder',
+      audience: freestyleAudience.trim() || (selectedDifficulty === 'simple' ? 'Team Lead' : 'Executive Stakeholder'),
       context: freestyleContext.trim() || undefined,
       objective: freestyleObjective.trim() || undefined,
       keyConstraint: freestyleConstraint.trim() || undefined,
       customCriteria: freestyleCriteria.trim() || undefined,
+      difficulty: selectedDifficulty,
     };
-    onContinue(undefined, draft);
+    onContinue(undefined, draft, selectedDifficulty);
   };
 
   const isFreestyleValid = freestyleTitle.trim().length > 0;
@@ -418,7 +515,41 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
         </div>
       </div>
 
-      {/* 2. Feedback Style Segmented Control */}
+      {/* 2. Difficulty Selection */}
+      <div className="space-y-2">
+        <label className="text-xs font-semibold text-zinc-700">
+          Difficulty
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          {difficulties.map((d) => {
+            const isSelected = selectedDifficulty === d.id;
+            return (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => onSelectDifficulty(d.id)}
+                className={`p-3.5 rounded-xl border text-left transition-all ${
+                  isSelected
+                    ? 'bg-white border-[#0f1d40] ring-1 ring-[#0f1d40] shadow-xs'
+                    : 'bg-white border-zinc-200/90 hover:border-zinc-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-xs text-zinc-900">{d.title}</span>
+                  {isSelected && (
+                    <Check className="w-3.5 h-3.5 text-[#0f1d40]" />
+                  )}
+                </div>
+                <p className="text-[11px] text-zinc-500 leading-relaxed">
+                  {d.description}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 3. Feedback Style Segmented Control */}
       <div className="space-y-2">
         <label className="text-xs font-semibold text-zinc-700">
           Critique Style
@@ -533,7 +664,7 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
           <div className="space-y-1.5">
             <div className="text-[11px] text-zinc-500 font-medium">Quick-Start Templates:</div>
             <div className="flex flex-wrap gap-1.5">
-              {freestyleTemplates.map((t) => (
+              {activeFreestyleTemplates.map((t) => (
                 <button
                   key={t.label}
                   type="button"
@@ -783,14 +914,14 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
         <div className="pt-2">
           <button
             type="button"
-            onClick={() => onContinue(industry)}
+            onClick={() => onContinue(industry, undefined, selectedDifficulty)}
             disabled={isLoading}
             className="w-full py-3.5 px-4 rounded-xl bg-[#0f1d40] hover:bg-[#162a5c] text-white font-medium text-sm flex items-center justify-center gap-2 shadow-xs transition-colors disabled:opacity-50"
           >
             {isLoading ? (
               <div className="flex items-center gap-2">
                 <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                <span>Generating scenario...</span>
+                <span>Generating {selectedDifficulty} scenario...</span>
               </div>
             ) : (
               <>

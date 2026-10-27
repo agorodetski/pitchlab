@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 
 dotenv.config();
@@ -49,10 +49,6 @@ app.get('/health', (_req, res) => {
 app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: 'ok', uptime: process.uptime() });
 });
-
-// Model used for scenarios, questions and pitch evaluation.
-// Can be changed without editing code by setting GEMINI_MODEL in the Secrets panel.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
 // Initialize GoogleGenAI server-side client with required User-Agent
 const ai = new GoogleGenAI({
@@ -110,8 +106,8 @@ function formatGeminiError(err: any): string {
 async function callGeminiWithRetry<T>(
   callFn: () => Promise<T>,
   maxRetries = 2,
-  initialDelayMs = 1500,
-  timeoutMs = 20000
+  initialDelayMs = 800,
+  timeoutMs = 15000
 ): Promise<T> {
   let attempt = 0;
   while (true) {
@@ -140,11 +136,12 @@ async function callGeminiWithRetry<T>(
         raw.includes('high demand') ||
         raw.includes('429') ||
         raw.includes('RESOURCE_EXHAUSTED') ||
-        raw.includes('rateLimitExceeded');
+        raw.includes('rateLimitExceeded') ||
+        raw.includes('GEMINI_TIMEOUT');
 
       if (attempt <= maxRetries && isTransient) {
         const delay = initialDelayMs * Math.pow(2, attempt - 1) + Math.random() * 500;
-        console.warn(`[Gemini API] Transient 503/429 error, retrying in ${Math.round(delay)}ms (attempt ${attempt}/${maxRetries})...`);
+        console.warn(`[Gemini API] Transient ${raw.includes('GEMINI_TIMEOUT') ? 'Timeout' : '503/429'} error, retrying in ${Math.round(delay)}ms (attempt ${attempt}/${maxRetries})...`);
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
       }
@@ -180,50 +177,35 @@ function parseModelJson(text: string): any {
   throw new Error('The AI returned a reply the app could not read. Please try again.');
 }
 
-// Self-test: open /api/diagnose in a browser to see whether this server can reach Gemini and how fast it replies
-app.get('/api/diagnose', async (_req, res) => {
-  const timed = async (label: string, run: () => Promise<any>) => {
-    const started = Date.now();
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('GEMINI_TIMEOUT')), 20000);
-        run().then(
-          () => {
-            clearTimeout(timer);
-            resolve();
-          },
-          (error) => {
-            clearTimeout(timer);
-            reject(error);
-          }
-        );
-      });
-      return { test: label, ok: true, ms: Date.now() - started };
-    } catch (err: any) {
-      return { test: label, ok: false, ms: Date.now() - started, error: formatGeminiError(err).slice(0, 300) };
-    }
-  };
-
-  const results = [
-    await timed('tiny text reply', () =>
-      ai.models.generateContent({ model: GEMINI_MODEL, contents: 'Reply with the single word OK.' })
-    ),
-    await timed('short JSON reply', () =>
-      ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: 'Return JSON like {"title":"..."} with a short title for a pitch about a coffee shop.',
-        config: { responseMimeType: 'application/json' },
-      })
-    ),
-  ];
-
-  res.json({ model: GEMINI_MODEL, apiKeyConfigured: Boolean(process.env.GEMINI_API_KEY), results });
-});
-
 // Scenario generation endpoint
 app.post('/api/scenario', async (req, res) => {
   try {
-    const { mode = 'startup', feedbackStyle = 'supportive', industry, freestyleDraft } = req.body;
+    const {
+      mode = 'startup',
+      feedbackStyle = 'supportive',
+      difficulty = 'simple',
+      industry,
+      freestyleDraft
+    } = req.body;
+
+    let difficultyInstructions = '';
+    if (difficulty === 'simple') {
+      difficultyInstructions = `DIFFICULTY LEVEL: SIMPLE (BEGINNER-FRIENDLY).
+CRITICAL: The scenario MUST be approachable, universal, everyday, and relatable to beginners or students.
+Recommended topics: campus coffee delivery app, intuitive student budgeting tool, neighborhood pet-sitting service, weekly team learning hour, local bakery solving customer lines, or pitching a 30-day trial of a simple whiteboard tool.
+ABSOLUTELY AVOID: Overly complex enterprise jargon, deep Kubernetes/cloud infrastructure, obscure regulatory acronyms, 350 bps gross margin calculations, or high-pressure private equity boardroom politics.
+The audience should be approachable and realistic (e.g., campus incubator director, supportive team lead, local small business mentor, friendly angel). Keep the constraint straightforward and easy to understand.`;
+    } else if (difficulty === 'complex') {
+      difficultyInstructions = `DIFFICULTY LEVEL: COMPLEX (ADVANCED EXECUTIVE).
+The scenario must be a high-stakes, intense executive, enterprise, or boardroom challenge.
+Topics: deep tech infrastructure, enterprise zero-trust security, M&A divestiture, multi-million dollar B2B contract, 350 bps margin contraction under MECE framework, high-frequency trading hardware.
+The audience must be demanding, incisive, and skeptical (e.g., Tier-1 VC General Partner, McKinsey/BCG Senior Partner, CISO of Fortune 50 company). Include rigorous metrics, tight constraints, or severe market skepticism.`;
+    } else {
+      difficultyInstructions = `DIFFICULTY LEVEL: MEDIUM (STANDARD PROFESSIONAL).
+The scenario should be a standard, realistic professional pitch or case interview.
+Topics: B2B SaaS onboarding platform, direct-to-consumer subscription retention, remote employee perk card, commercial sales demo hook, angel round ask.
+The audience should be a typical professional decision maker (e.g., seed angel investor, consulting engagement manager, VP of sales). Balanced metrics and realistic business trade-offs.`;
+    }
 
     let modeDescription = '';
     if (mode === 'freestyle') {
@@ -236,43 +218,47 @@ ${freestyleDraft ? `User's Provided Scenario & Custom Criteria Draft:
 - Constraint / Curveball: ${freestyleDraft.keyConstraint || ''}
 - Custom Criteria to Grade: ${freestyleDraft.customCriteria || ''}
 
-TASK: Polish this into an executive-grade 60-second scenario while strictly preserving the user's pitch topic, target audience, and custom criteria. Provide a crisp constraint/curveball if none was provided, and add an expert starter tip.` : `Generate an inspiring, realistic high-stakes scenario where an executive, founder, or professional must pitch a strategic proposal in 60 seconds.`}`;
+TASK: Polish this into an effective 60-second scenario tailored to the ${difficulty} difficulty while strictly preserving the user's pitch topic, target audience, and custom criteria. Provide a crisp constraint/curveball if none was provided, and add a helpful starter tip.` : `Generate an inspiring, realistic scenario where a speaker must pitch a proposal in 60 seconds at a ${difficulty} difficulty level.`}`;
     } else {
-      modeDescription = `Mode: ${mode} (Options: startup = Startup Pitch to VC, consulting = Consulting Case Answer to McKinsey/BCG partner, elevator = 45-second high-stakes Elevator Pitch).`;
+      modeDescription = `Mode: ${mode} (Options: startup = Startup Pitch, consulting = Consulting Case Answer, elevator = 45-second Elevator Pitch).`;
     }
 
-    const prompt = `You are an expert executive coach creating a realistic, high-stakes 60-second scenario for a user practicing:
+    const prompt = `You are an expert executive coach creating a realistic 60-second scenario for a user practicing:
 ${modeDescription}
+${difficultyInstructions}
 Feedback Style: ${feedbackStyle} (supportive = encouraging mentor, tough = ruthless Tier-1 venture partner or senior partner).
 ${industry ? `Optional Industry Focus: ${industry}` : ''}
 
-Generate a concise, gripping scenario prompt.
+Generate a concise, gripping scenario prompt strictly matched to the ${difficulty} difficulty level.
 Return pure JSON matching this exact structure:
 {
   "title": "Short title (under 6 words)",
-  "audience": "Who they are speaking to (e.g. Partner at Benchmark, Senior Partner at BCG, CTO of JPMorgan)",
+  "difficulty": "${difficulty}",
+  "audience": "Who they are speaking to",
   "context": "Context background (1-2 crisp sentences setting the scene)",
   "objective": "What the speaker must accomplish in under 60 seconds (1 crisp sentence)",
-  "keyConstraint": "A tricky constraint or curveball (e.g. 'Customer acquisition cost doubled last month', 'Margins dipped 300 bps', 'Elevator stops at floor 24 in 45 seconds')",
+  "keyConstraint": "A realistic constraint or curveball matched to the ${difficulty} difficulty level",
   "starterTip": "One punchy tip on how to nail this opening",
   "customCriteria": "Specific custom criteria or focus areas to grade against (preserve user's criteria if provided, or supply 1 high-leverage evaluation standard)"
 }`;
 
-    const response = await callGeminiWithRetry(() =>
-      ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-        },
-      }),
-      1,
-      1500,
+    const response = await callGeminiWithRetry(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+          },
+        }),
+      3,
+      800,
       20000
     );
 
     const text = response.text || '{}';
     const parsed = parseModelJson(text);
+    parsed.difficulty = difficulty;
 
     // Safeguard: Ensure user's custom aspects are strictly preserved
     if (mode === 'freestyle' && freestyleDraft) {
@@ -324,11 +310,15 @@ The candidate has asked ONE clarifying question about this scenario before recor
 
 Provide a concise, actionable answer in 2 to 3 sentences maximum. Give concrete tactical guidance on what angle, metric, or framing will work best against this specific audience.`;
 
-    const response = await callGeminiWithRetry(() =>
-      ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: prompt,
-      })
+    const response = await callGeminiWithRetry(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: prompt,
+        }),
+      3,
+      800,
+      12000
     );
 
     const answer = response.text?.trim() || 'Focus on leading with your core quantified metric in the first 10 seconds, then directly address their skepticism before asking for the follow-up meeting.';
@@ -501,19 +491,20 @@ Output MUST be a valid JSON object matching this schema:
       text: systemPrompt,
     };
 
-    const response = await callGeminiWithRetry(() =>
-      ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: {
-          parts: [audioPart, textPart],
-        },
-        config: {
-          responseMimeType: 'application/json',
-        },
-      }),
-      1,
-      1500,
-      60000
+    const response = await callGeminiWithRetry(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: {
+            parts: [audioPart, textPart],
+          },
+          config: {
+            responseMimeType: 'application/json',
+          },
+        }),
+      3,
+      1000,
+      35000
     );
 
     const responseText = response.text || '{}';

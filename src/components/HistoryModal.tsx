@@ -223,10 +223,21 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
                 >
                   <div className="flex items-start justify-between gap-2.5">
                     <div className="space-y-1 flex-1 min-w-0">
-                      <div className="flex items-center gap-2 text-[11px] text-zinc-400 flex-wrap">
+                      <div className="flex items-center gap-1.5 text-[11px] text-zinc-400 flex-wrap">
                         <span className="capitalize text-zinc-700 font-semibold bg-zinc-100 px-1.5 py-0.5 rounded text-[10px]">
                           {s.mode}
                         </span>
+                        {(s.difficulty || s.scenario.difficulty) && (
+                          <span className={`capitalize font-semibold px-1.5 py-0.5 rounded text-[10px] border ${
+                            (s.difficulty || s.scenario.difficulty) === 'simple'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : (s.difficulty || s.scenario.difficulty) === 'complex'
+                              ? 'bg-purple-50 text-purple-700 border-purple-200'
+                              : 'bg-blue-50 text-blue-700 border-blue-200'
+                          }`}>
+                            {s.difficulty || s.scenario.difficulty}
+                          </span>
+                        )}
                         <span>·</span>
                         <span>{dateStr}</span>
                         <span>·</span>

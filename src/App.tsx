@@ -6,13 +6,14 @@ import { AudioRecorderCard } from './components/AudioRecorderCard';
 import { EvaluationView } from './components/EvaluationView';
 import { ComparisonView } from './components/ComparisonView';
 import { HistoryModal } from './components/HistoryModal';
-import { DEFAULT_SCENARIOS } from './data/presets';
+import { DEFAULT_SCENARIOS, getPresets } from './data/presets';
 import {
   FeedbackStyle,
   PitchEvaluation,
   PitchMode,
   SavedPitchSession,
   Scenario,
+  ScenarioDifficulty,
 } from './types';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import { postJsonWithTimeout, RequestTimeoutError } from './utils/postJsonWithTimeout';
@@ -33,7 +34,8 @@ export default function App() {
   const [step, setStep] = useState<FlowStep>('mode_selection');
   const [mode, setMode] = useState<PitchMode>('startup');
   const [feedbackStyle, setFeedbackStyle] = useState<FeedbackStyle>('supportive');
-  const [scenario, setScenario] = useState<Scenario>(DEFAULT_SCENARIOS.startup[0]);
+  const [difficulty, setDifficulty] = useState<ScenarioDifficulty>('simple');
+  const [scenario, setScenario] = useState<Scenario>(() => getPresets('startup', 'simple')[0]);
 
   // Audio & Evaluation State
   const [audioR1Blob, setAudioR1Blob] = useState<Blob | null>(null);
@@ -53,6 +55,7 @@ export default function App() {
   const [scenarioRetry, setScenarioRetry] = useState<{
     industry?: string;
     freestyleDraft?: Partial<Scenario>;
+    difficulty?: ScenarioDifficulty;
   } | null>(null);
   const [failedSubmission, setFailedSubmission] = useState<{
     audioBase64: string;
@@ -134,6 +137,7 @@ export default function App() {
             timestamp: Date.now(),
             mode,
             feedbackStyle,
+            difficulty: scenario.difficulty || difficulty,
             scenario,
             evalR1,
             evalR2: round === 2 && evalR2 ? evalR2 : null,
@@ -201,62 +205,66 @@ export default function App() {
 
   const handleGenerateScenario = async (
     industry?: string,
-    freestyleDraft?: Partial<Scenario>
+    freestyleDraft?: Partial<Scenario>,
+    requestedDifficulty?: ScenarioDifficulty
   ) => {
+    const activeDifficulty = requestedDifficulty || difficulty;
     setIsGeneratingScenario(true);
     setErrorMessage(null);
     try {
       const data = await postJsonWithTimeout(
         '/api/scenario',
-        { mode, feedbackStyle, industry, freestyleDraft },
+        {
+          mode,
+          feedbackStyle,
+          difficulty: activeDifficulty,
+          industry,
+          freestyleDraft
+        },
         35000
       );
       if (data.success && data.scenario && data.scenario.title) {
-        setScenario(data.scenario);
+        setScenario({ ...data.scenario, difficulty: activeDifficulty });
         setScenarioRetry(null);
+        setErrorMessage(null);
         setStep('scenario');
       } else {
         if (mode === 'freestyle' && freestyleDraft?.title) {
           setScenario({
             title: freestyleDraft.title || 'Freestyle Pitch',
-            audience: freestyleDraft.audience || 'Executive Decision Maker',
+            audience: freestyleDraft.audience || (activeDifficulty === 'simple' ? 'Team Lead' : 'Executive Decision Maker'),
             context: freestyleDraft.context || 'Custom scenario defined for your pitch practice.',
             objective: freestyleDraft.objective || 'Present your core argument clearly within 60 seconds.',
-            keyConstraint: freestyleDraft.keyConstraint || 'Audience is pressed for time and highly analytical.',
+            keyConstraint: freestyleDraft.keyConstraint || (activeDifficulty === 'simple' ? 'Listener is busy with other tasks.' : 'Audience is pressed for time and highly analytical.'),
             starterTip: 'Hook the listener with your strongest single metric or insight upfront.',
             customCriteria: freestyleDraft.customCriteria,
+            difficulty: activeDifficulty,
           });
-          setStep('scenario');
         } else {
-          const presets = DEFAULT_SCENARIOS[mode];
+          const presets = getPresets(mode, activeDifficulty);
           setScenario(presets[0]);
-          setStep('scenario');
         }
-        setScenarioRetry({ industry, freestyleDraft });
-        setErrorMessage(
-          `${data?.error ? `${data.error} ` : ''}A fallback scenario is shown so you can keep practicing. You can retry the AI version.`
-        );
+        setScenarioRetry(null);
+        setErrorMessage(null);
+        setStep('scenario');
       }
     } catch (err: any) {
       console.warn('Using preset or draft scenario fallback:', err);
-      setScenarioRetry({ industry, freestyleDraft });
-      setErrorMessage(
-        err instanceof RequestTimeoutError
-          ? 'Scenario generation is taking too long. A fallback scenario is shown so you can keep practicing, or you can retry the AI version.'
-          : 'AI scenario generation is unavailable right now. A fallback scenario is shown so you can keep practicing, or you can retry the AI version.'
-      );
+      setScenarioRetry(null);
+      setErrorMessage(null);
       if (mode === 'freestyle' && freestyleDraft?.title) {
         setScenario({
           title: freestyleDraft.title,
-          audience: freestyleDraft.audience || 'Executive Stakeholder',
+          audience: freestyleDraft.audience || (activeDifficulty === 'simple' ? 'Team Lead' : 'Executive Stakeholder'),
           context: freestyleDraft.context || 'Custom user pitch scenario.',
           objective: freestyleDraft.objective || 'Deliver your core proposal in under 60 seconds.',
-          keyConstraint: freestyleDraft.keyConstraint || 'Audience is skeptical of unverified claims.',
+          keyConstraint: freestyleDraft.keyConstraint || (activeDifficulty === 'simple' ? 'Listener has a busy schedule.' : 'Audience is skeptical of unverified claims.'),
           starterTip: 'Start with the problem cost before presenting your solution.',
           customCriteria: freestyleDraft.customCriteria,
+          difficulty: activeDifficulty,
         });
       } else {
-        const presets = DEFAULT_SCENARIOS[mode];
+        const presets = getPresets(mode, activeDifficulty);
         setScenario(presets[0]);
       }
       setStep('scenario');
@@ -266,12 +274,13 @@ export default function App() {
   };
 
   const handleDirectStartFreestyle = (customScenario: Scenario) => {
-    setScenario(customScenario);
+    setScenario({ ...customScenario, difficulty: customScenario.difficulty || difficulty });
     setStep('scenario');
   };
 
   const handleShufflePreset = () => {
-    const presets = DEFAULT_SCENARIOS[mode];
+    const activeDifficulty = scenario.difficulty || difficulty;
+    const presets = getPresets(mode, activeDifficulty);
     const nextIdx = (presetIndex + 1) % presets.length;
     setPresetIndex(nextIdx);
     setScenario(presets[nextIdx]);
@@ -358,6 +367,7 @@ export default function App() {
     setScenarioRetry(null);
     setIsSavedR1(false);
     setIsSavedR2(false);
+    setDifficulty('simple');
     setCurrentSessionId(`pitch_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
     setStep('mode_selection');
   };
@@ -365,6 +375,11 @@ export default function App() {
   const handleSelectHistorySession = (session: SavedPitchSession) => {
     setMode(session.mode);
     setFeedbackStyle(session.feedbackStyle);
+    if (session.difficulty) {
+      setDifficulty(session.difficulty);
+    } else if (session.scenario?.difficulty) {
+      setDifficulty(session.scenario.difficulty);
+    }
     setScenario(session.scenario);
     setEvalR1(session.evalR1);
     setCurrentSessionId(session.id);
@@ -454,7 +469,7 @@ export default function App() {
               </div>
               {scenarioRetry && !failedSubmission && (
                 <button
-                  onClick={() => handleGenerateScenario(scenarioRetry.industry, scenarioRetry.freestyleDraft)}
+                  onClick={() => handleGenerateScenario(scenarioRetry.industry, scenarioRetry.freestyleDraft, scenarioRetry.difficulty)}
                   disabled={isGeneratingScenario}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-800 text-white hover:bg-amber-900 active:scale-98 transition shadow-xs cursor-pointer disabled:opacity-60"
                 >
@@ -514,10 +529,15 @@ export default function App() {
             selectedMode={mode}
             onSelectMode={(m) => {
               setMode(m);
-              setScenario(DEFAULT_SCENARIOS[m][0]);
+              setScenario(getPresets(m, difficulty)[0]);
             }}
             selectedStyle={feedbackStyle}
             onSelectStyle={setFeedbackStyle}
+            selectedDifficulty={difficulty}
+            onSelectDifficulty={(d) => {
+              setDifficulty(d);
+              setScenario(getPresets(mode, d)[0]);
+            }}
             onContinue={handleGenerateScenario}
             onDirectStartFreestyle={handleDirectStartFreestyle}
             isLoading={isGeneratingScenario}
@@ -531,7 +551,13 @@ export default function App() {
             mode={mode}
             feedbackStyle={feedbackStyle}
             onStartRecording={() => setStep('recording_r1')}
-            onRegenerate={() => handleGenerateScenario(undefined, mode === 'freestyle' ? scenario : undefined)}
+            onRegenerate={() =>
+              handleGenerateScenario(
+                undefined,
+                mode === 'freestyle' ? scenario : undefined,
+                scenario.difficulty || difficulty
+              )
+            }
             onShufflePreset={handleShufflePreset}
             onUpdateScenario={(updated) => {
               setScenario(updated);

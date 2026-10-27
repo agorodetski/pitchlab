@@ -1,5 +1,6 @@
 export type PitchMode = 'startup' | 'consulting' | 'elevator' | 'freestyle';
 export type FeedbackStyle = 'supportive' | 'tough';
+export type ScenarioDifficulty = 'simple' | 'medium' | 'complex';
 
 export interface Scenario {
   title: string;
@@ -9,6 +10,7 @@ export interface Scenario {
   keyConstraint: string;
   starterTip?: string;
   customCriteria?: string;
+  difficulty?: ScenarioDifficulty;
 }
 
 export interface EvaluationScores {
@@ -57,6 +59,7 @@ export interface SavedPitchSession {
   timestamp: number;
   mode: PitchMode;
   feedbackStyle: FeedbackStyle;
+  difficulty?: ScenarioDifficulty;
   scenario: Scenario;
   evalR1: PitchEvaluation;
   evalR2?: PitchEvaluation | null;
